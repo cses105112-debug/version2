@@ -1,0 +1,105 @@
+ps * 1000, lm: q.map(a => [a.x, a.y, a.z, a.visibility || 0])});
+       viewer.push({i: k, p: q.map(a => [+a.x.toFixed(4), +a.y.toFixed(4), +(a.visibility || 0).toFixed(3)])});
+     }
+     job.done = k - i0 + 1;
+   }
+   job.message = '計算運動學…';
+   const meta = await kget('meta:' + sid);
+   Object.assign(meta, {width: v.videoWidth, height: v.videoHeight, fps: cfps, video_fps: vfps, source: 'video'});
+   const res = JSON.parse((await pyP).finalize(JSON.stringify(frames), JSON.stringify(meta)));
+   const info = {frames_total: job.total, frames_detected: frames.length, capture_fps: cfps, video_fps: vfps, duration_s: +(job.total / cfps).toFixed(3), width: v.videoWidth, height: v.videoHeight};
+   await kset('lm:' + sid, {video_fps: vfps, capture_fps: cfps, width: v.videoWidth, height: v.videoHeight, n_frames: pts.length, handedness: meta.handedness, frames: viewer});
+   await kset('data:' + sid, {raw_csv: res.raw_csv, kinematics_csv: res.kinematics_csv, legacy_csv: res.legacy_csv, metrics: res.metrics, info});
+   await kset('meta:' + sid, meta);
+   Object.assign(job, {status: 'done', info, metrics: res.metrics, message: ''});
+ } catch (e) { Object.assign(job, {status: 'error', message: lastLine(e)}); }
+ finally { if (v) URL.revokeObjectURL(v.src); if (L) L.close(); }
+}
+ 
+// ---------- 投手資料 ----------
+const PF = ['handedness', 'height_cm', 'weight_kg', 'upper_arm_cm', 'forearm_cm', 'age', 'ir_rom_throw_deg', 'ir_rom_other_deg', 'ir_trials_throw', 'ir_trials_other', 'notes'];
+async function upsert(name, f) {
+ if (!name) throw new Error('姓名不可空白');
+ const P = (await kget('pitchers')) || {}, cur = P[name] || {name, created_at: now()};
+ for (const k of PF) if (f[k] != null && f[k] !== 0) cur[k] = f[k];
+ cur.updated_at = now(); P[name] = cur; await kset('pitchers', P);
+ return cur;
+}
+async function history(name) {
+ const rows = (await kall('meta:')).filter(m => m.pitcher_name === name)
+   .map(m => ({session_id: m.sid, created_at: m.created_at, camera_role: m.camera_role, fps: m.fps, ...(m.summary || {})}));
+ return rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+}
+ 
+// ---------- 路由：與伺服器版 API 相同 ----------
+const J = (o, status = 200) => new Response(JSON.stringify(o), {status, headers: {'Content-Type': 'application/json'}});
+const fail = (m, s = 400) => J({detail: m}, s);
+const CSV = {kinematics: 'kinematics_csv', raw: 'raw_csv', dynamics: 'dyn_csv'};
+async function local(url, opt) {
+ const u = new URL(url, location.origin), seg = u.pathname.split('/').filter(Boolean).slice(1), m = (opt.method || 'GET').toUpperCase();
+ let body = {}; if (typeof opt.body === 'string') { try { body = JSON.parse(opt.body); } catch {} }
+ try {
+   if (seg[0] === 'pitchers') {
+     if (seg[1] === 'history') return J(await history(u.searchParams.get('name')));
+     if (m === 'POST') return J(await upsert((body.name || '').trim(), body));
+     return J(Object.values((await kget('pitchers')) || {}).sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')));
+   }
+   if (seg[0] !== 'sessions') return fail('not found', 404);
+   if (m === 'POST' && !seg[1]) {
+     const sid = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+     const meta = {...body, sid, pitcher_name: (body.pitcher_name || '').trim() || '未命名', created_at: now()};
+     await kset('meta:' + sid, meta);
+     if (meta.pitcher_name !== '未命名') await upsert(meta.pitcher_name, meta);
+     return J({session_id: sid});
+   }
+   const sid = seg[1], act = seg[2], meta = await kget('meta:' + sid);
+   if (!meta) return fail('session not found', 404);
+   if (act === 'video') return J({received: 0});                       // 影片不上傳，直接在本機讀取
+   if (act === 'analyze') {
+     const file = document.getElementById('file').files[0];
+     if (!file) return fail('找不到影片檔');
+     runJob(sid, file, body); return J({ok: true});
+   }
+   const data = (await kget('data:' + sid)) || null;
+   if (act === 'status') return J(jobs[sid] || (data ? {status: 'done', info: data.info, metrics: data.metrics} : {status: 'none'}));
+   if (act === 'landmarks') { const L = await kget('lm:' + sid); return L ? J(L) : fail('尚未完成影片分析', 404); }
+   if (!data) return fail('尚未完成影片分析');
+   if (act === 'dynamics' && m === 'POST') {
+     const core = await PYC();
+     const prm = {cutoff_hz: body.cutoff_hz ?? 6, ball_kg: body.ball_kg ?? 0.145, fc_ms: body.fc_ms ?? null, mer_ms: body.mer_ms ?? null, mer_deg: body.mer_deg ?? null, mer_offset_deg: body.mer_offset_deg ?? 0, calibration_factor: body.calibration_factor ?? null, br_ms: body.br_ms ?? null};
+     const r = JSON.parse(core.dynamics(data.raw_csv, JSON.stringify(meta), JSON.stringify(prm)));
+     data.dyn_csv = r.csv; data.dyn_metrics = r.metrics; await kset('data:' + sid, data);
+     const mt = r.metrics, ph = mt.phases || {}, a = mt.assessment || {};
+     meta.summary = {varus_cocking: (ph.cocking || {}).varus_peak_Nm, varus_accel: (ph.acceleration || {}).varus_peak_Nm,
+       medial_cocking: (ph.cocking || {}).medial_peak_N, medial_accel: (ph.acceleration || {}).medial_peak_N,
+       stride_pct: (mt.kinematics || {}).stride_pct_height, overall: a.overall, flagged: a.flagged || []};
+     await kset('meta:' + sid, meta);
+     return J(mt);
+   }
+   if (act === 'dynamics_metrics') return data.dyn_metrics ? J(data.dyn_metrics) : fail('尚未計算', 404);
+   const text = act === 'legacy' ? '\ufeff' + data.legacy_csv : data[CSV[act]];
+   return text ? new Response(new Blob([text], {type: 'text/csv'})) : fail('not ready', 404);
+ } catch (e) { return fail(lastLine(e), 500); }
+}
+ 
+const realFetch = window.fetch.bind(window);
+// 只攔截「同源」的 /api/* 與 /healthz，回傳本機路徑；其餘（外部資源、URL 物件、Request、undefined 等）一律回傳 null，
+// 原封不動交給原生 fetch，確保 Pyodide / MediaPipe / 模型檔的載入不受影響。
+const toLocal = u => {
+ try {
+   const raw = typeof u === 'string' ? u : u instanceof URL ? u.href : u && u.url;   // 字串 / URL / Request
+   if (!raw) return null;
+   const x = new URL(raw, location.href);                                         // 相對與絕對網址都能解析
+   if (x.origin !== location.origin) return null;
+   return x.pathname === '/healthz' || x.pathname.startsWith('/api/') ? x.pathname + x.search : null;
+ } catch { return null; }
+};
+window.fetch = (url, opt = {}) => {
+ const p = toLocal(url);
+ if (!p) return realFetch(url, opt);                       // 防呆：無效或外部參數直接走原生 fetch（含 undefined → 原生 TypeError）
+ if (p === '/healthz') return Promise.resolve(J({ok: true, mode: 'browser'}));
+ return local(p, url instanceof Request ? {method: url.method, ...opt} : opt);
+};
+})();
+ 
+
