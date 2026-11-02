@@ -1,0 +1,1361 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="投手分析">
+<meta name="theme-color" content="#181818">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>投手姿態分析</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#181818;color:#fff;font:14px system-ui,sans-serif}
+#app{max-width:820px;margin:auto;padding:12px}
+h3{margin:4px 0 10px;text-align:center}
+button,select,input{font:inherit;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#333;color:#fff}
+button{cursor:pointer}button:disabled{opacity:.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}
+.grid label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#aaa}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;margin:8px 0}
+#go{background:#28a745;border:0;font-weight:700}
+progress{width:100%}
+#st{margin:8px 0;color:#ffc107;font-weight:700;text-align:center;min-height:1.4em}
+#stage{display:flex;flex-direction:column;background:#000;border-radius:8px;overflow:hidden}
+#cv{width:100%;height:auto;min-height:0;display:block}
+#v{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.ctl{padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:#111}
+#seek{width:100%;padding:0}
+#stage.fs{position:fixed;inset:0;z-index:99;border-radius:0}
+#stage.fs #cv{flex:1;height:100%;object-fit:contain}
+.opt{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;font-size:13px}
+.opt label{display:flex;align-items:center;gap:4px}
+.opt input[type=checkbox]{padding:0}
+#off{width:70px}
+pre{background:#222;padding:8px;border-radius:6px;overflow:auto;font-size:12px}
+small{color:#aaa}
+.tb{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}
+.tb th,.tb td{border-bottom:1px solid #333;padding:5px 4px;text-align:center}
+.tb tr.rowc{cursor:pointer}
+.bdg{display:inline-block;padding:1px 8px;border-radius:10px;color:#000;font-weight:700}
+.ban{padding:8px;border-radius:6px;color:#000;font-weight:700;text-align:center;margin:8px 0}
+.it{background:#222;padding:6px 8px;margin:6px 0;border-radius:4px;font-size:13px}
+.it small{display:block;margin-top:2px}
+@media (pointer:coarse){input,select{font-size:16px}button{min-height:42px}}  /* iOS 輸入框字小於 16px 會自動放大頁面 */
+</style>
+</head>
+<body>
+<div id="app">
+  <h3>投手姿態分析</h3>
+
+  <div class="grid">
+    <label>拍攝幀率 fps（慢動作請填實際值，如 240）<input id="cfps" type="number" value="240"></label>
+    <label>分析起點 秒（選填，只分析投球片段可大幅加快）<input id="t0" type="number" step="0.1" min="0"></label>
+    <label>分析終點 秒（選填）<input id="t1" type="number" step="0.1" min="0"></label>
+    <label>分析模型<select id="model"><option value="full">標準</option><option value="heavy">高精度（較慢）</option><option value="lite">輕量（最快）</option></select></label>
+    <label>姓名<input id="pname" list="plist" placeholder="輸入或選擇既有投手" autocomplete="off"><datalist id="plist"></datalist></label>
+    <label>慣用手<select id="hand"><option>Right</option><option>Left</option></select></label>
+    <label>身高 cm<input id="ht" type="number" value="176"></label>
+    <label>體重 kg<input id="wt" type="number" value="65"></label>
+    <label>上臂長 cm<input id="ua" type="number" value="35"></label>
+    <label>前臂長 cm<input id="fa" type="number" value="28"></label>
+    <label>年齡（套用常模需要）<input id="age" type="number" placeholder="例如 17"></label>
+    <label>慣用側肩內旋 ROM °（選填，可多次，用逗號分隔）<input id="ir_t" placeholder="例如 52, 55, 50"></label>
+    <label>非慣用側肩內旋 ROM °（選填，可多次）<input id="ir_o" placeholder="例如 68, 70, 66"></label>
+    <label>鏡頭角色<select id="role">
+      <option value="Camera A back">A　後方（投手背後）</option>
+      <option value="Camera B side">B　側面（三壘或一壘側）</option>
+      <option value="Camera C front">C　正面（本壘後方）</option></select></label>
+  </div>
+  <div class="row"><input id="file" type="file" accept="video/*"></div>
+  <div class="row">
+    <button id="go">上傳並分析</button>
+    <button id="savep">儲存投手資料</button>
+    <button id="hist">歷史紀錄</button>
+  </div>
+  <div id="histbox"></div>
+  <progress id="pg" value="0" max="100" hidden></progress>
+  <div id="st"></div>
+
+  <section id="viewer" hidden>
+    <div id="stage">
+      <video id="v" playsinline muted></video>
+      <canvas id="cv" width="1280" height="720"></canvas>
+      <div class="ctl">
+        <input id="seek" type="range" min="0" max="0" value="0" step="1">
+        <div class="row">
+          <button id="prev">◀ 前一幀</button>
+          <button id="play">▶ 播放</button>
+          <button id="next">下一幀 ▶</button>
+          <select id="rate"><option value="0.1">0.1×</option><option value="0.25" selected>0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option></select>
+          <button id="fs">⛶</button>
+        </div>
+        <div class="row"><small id="info"></small></div>
+      </div>
+    </div>
+    <div class="opt" style="margin-top:10px">
+      <label><input id="o_skel" type="checkbox" checked>骨架</label>
+      <label><input id="o_pts" type="checkbox" checked>關節點</label>
+      <label><input id="o_lbl" type="checkbox" checked>名稱</label>
+      <label><input id="o_trail" type="checkbox" checked>手腕軌跡</label>
+      <label>標記偏移（幀）<input id="off" type="number" value="0" step="1"></label>
+    </div>
+    <div class="row">
+      <button id="mfc">設目前幀為 FC</button><button id="mmer">設為 MER</button><button id="mbr">設為 BR</button>
+      <button id="mclr">清除</button><small id="mtxt"></small>
+      <label style="font-size:12px;color:#aaa">MER 角度 °（選填，實測值）<input id="mdeg" type="number" style="width:90px"></label>
+      <label style="font-size:12px;color:#aaa">單鏡頭校正係數（預設 1）<input id="cal" type="number" step="0.01" min="0.5" max="2" placeholder="1" style="width:90px"></label>
+    </div>
+    <div class="row">
+      <button id="dyn">計算力與力矩</button>
+      <button id="jfc" hidden>跳到 FC</button><button id="jmer" hidden>跳到 MER</button><button id="jbr" hidden>跳到 BR</button>
+    </div>
+    <div id="alerts"></div>
+    <div id="dl" class="row">
+      <button data-k="kinematics">運動學 CSV</button><button data-k="legacy">舊格式 CSV</button>
+      <button data-k="raw">原始座標 CSV</button><button data-k="dynamics" id="dk" hidden>力學 CSV</button>
+    </div>
+    <pre id="res" hidden></pre>
+  </section>
+</div>
+
+<script>
+// 瀏覽器內建後端：攔截 /api/* 請求並在本機執行。
+// 資料存 IndexedDB；姿態用 MediaPipe（瀏覽器版）；力學運算用 Pyodide 直接執行 core.py / biomech.py / thresholds.py。
+(() => {
+const PYODIDE = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const now = () => new Date().toISOString().slice(0, 19) + 'Z';
+const lastLine = e => String(e && e.message || e).trim().split('\n').pop();
+
+// ---------- IndexedDB ----------
+let _db;
+const dbp = () => _db || (_db = new Promise((ok, bad) => {
+  const r = indexedDB.open('pitch', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kv');
+  r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+}));
+const kv = async (mode, fn) => { const d = await dbp(); return new Promise((ok, bad) => {
+  const t = d.transaction('kv', mode), q = fn(t.objectStore('kv'));
+  t.oncomplete = () => ok(q && q.result); t.onerror = () => bad(t.error); }); };
+const kget = k => kv('readonly', s => s.get(k));
+const kset = (k, v) => kv('readwrite', s => s.put(v, k));
+const kall = p => kv('readonly', s => s.getAll(IDBKeyRange.bound(p, p + '\uffff')));
+
+// ---------- MP4 / MOV：讀出每一幀的實際時間（只讀 moov，不讀影像資料）----------
+const u32 = (d, o) => d.getUint32(o);
+const tag = (d, o) => String.fromCharCode(d.getUint8(o), d.getUint8(o + 1), d.getUint8(o + 2), d.getUint8(o + 3));
+function boxes(d, s, e) {
+  const out = [];
+  while (s + 8 <= e) {
+    let size = u32(d, s), hdr = 8;
+    if (size === 1) { size = Number(d.getBigUint64(s + 8)); hdr = 16; } else if (size === 0) size = e - s;
+    if (size < hdr) break;
+    out.push({type: tag(d, s + 4), s: s + hdr, e: Math.min(e, s + size)});
+    s += size;
+  }
+  return out;
+}
+const sub = (d, b, ...path) => { for (const t of path) { b = b && boxes(d, b.s, b.e).find(x => x.type === t); } return b || null; };
+async function mp4Times(file) {
+  let o = 0, moov = null;
+  while (o + 8 <= file.size && !moov) {
+    const h = new DataView(await file.slice(o, o + 16).arrayBuffer());
+    let size = u32(h, 0), hdr = 8;
+    if (size === 1) { size = Number(h.getBigUint64(8)); hdr = 16; } else if (size === 0) size = file.size - o;
+    if (size < hdr) break;
+    if (tag(h, 4) === 'moov') moov = [o + hdr, o + size];
+    o += size;
+  }
+  if (!moov) throw new Error('讀不到影片時間資訊：請使用手機錄製的 mp4 / mov 檔');
+  const d = new DataView(await file.slice(moov[0], moov[1]).arrayBuffer());
+  for (const trak of boxes(d, 0, d.byteLength).filter(b => b.type === 'trak')) {
+    const hd = sub(d, trak, 'mdia', 'hdlr');
+    if (!hd || tag(d, hd.s + 8) !== 'vide') continue;
+    const mdhd = sub(d, trak, 'mdia', 'mdhd'), ts = u32(d, mdhd.s + (d.getUint8(mdhd.s) === 1 ? 20 : 12));
+    const stbl = sub(d, trak, 'mdia', 'minf', 'stbl'), stts = sub(d, stbl, 'stts'), ctts = sub(d, stbl, 'ctts');
+    const dts = []; let t = 0;
+    for (let n = u32(d, stts.s + 4), p = stts.s + 8; n--; p += 8) for (let c = u32(d, p); c--;) { dts.push(t); t += u32(d, p + 4); }
+    let pts = dts;
+    if (ctts) {
+      const off = [];
+      for (let n = u32(d, ctts.s + 4), p = ctts.s + 8; n--; p += 8) for (let c = u32(d, p); c--;) off.push(d.getInt32(p + 4));
+      pts = dts.map((x, i) => x + (off[i] || 0));
+    }
+    let shift = 0; const elst = sub(d, trak, 'edts', 'elst');   // 第一段非空編輯的起點
+    if (elst) {
+      const v1 = d.getUint8(elst.s) === 1;
+      for (let n = u32(d, elst.s + 4), p = elst.s + 8; n--; p += v1 ? 20 : 12) {
+        const mt = v1 ? Number(d.getBigInt64(p + 8)) : d.getInt32(p + 4);
+        if (mt >= 0) { shift = mt; break; }
+      }
+    }
+    return pts.map(x => (x - shift) / ts).sort((a, b) => a - b);   // 呈現順序的時間（秒）
+  }
+  throw new Error('影片中找不到視訊軌');
+}
+if (typeof module !== 'undefined') module.exports = {mp4Times};
+if (typeof window === 'undefined') return;
+
+// ---------- Pyodide（跑 Python 運算）----------
+const pySrc = async n => { const e = document.getElementById('py-' + n); return e ? e.textContent : (await realFetch('/' + n + '.py')).text(); };
+let PYP = null;
+const PYC = () => PYP || (PYP = (async () => {
+  await new Promise((ok, bad) => { const s = document.createElement('script'); s.src = PYODIDE + 'pyodide.js'; s.onload = ok;
+    s.onerror = () => bad(new Error('無法載入運算引擎（第一次使用需要網路）')); document.head.append(s); });
+  const py = await loadPyodide({indexURL: PYODIDE});
+  await py.loadPackage(['numpy', 'pandas', 'scipy']);
+  for (const n of ['biomech', 'thresholds', 'core']) py.FS.writeFile(n + '.py', await pySrc(n));
+  return py.pyimport('core');
+})());
+
+// ---------- MediaPipe（瀏覽器版）----------
+async function pose(model) {
+  const {PoseLandmarker, FilesetResolver} = await import(MP + '/+esm');
+  const fs = await FilesetResolver.forVisionTasks(MP + '/wasm');
+  const url = `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${model}/float16/latest/pose_landmarker_${model}.task`;
+  for (const delegate of ['GPU', 'CPU']) {
+    try { return await PoseLandmarker.createFromOptions(fs, {baseOptions: {modelAssetPath: url, delegate}, runningMode: 'VIDEO', numPoses: 1}); }
+    catch (e) { if (delegate === 'CPU') throw e; }
+  }
+}
+const seek = (v, t) => new Promise(res => {
+  let done = false;
+  const fin = () => { if (done) return; done = true; v.removeEventListener('seeked', fin); res(); };
+  v.addEventListener('seeked', fin); setTimeout(fin, 3000); v.currentTime = t;
+});
+
+// ---------- 影片分析工作 ----------
+const jobs = {};
+async function runJob(sid, file, p) {
+  const job = jobs[sid] = {status: 'running', done: 0, total: 0, message: '讀取影片時間資訊…'};
+  let v = null, L = null;
+  try {
+    const pts = await mp4Times(file);
+    const gaps = pts.slice(1).map((x, i) => x - pts[i]).sort((a, b) => a - b), dt = gaps[gaps.length >> 1] || 1 / 30;
+    const vfps = 1 / dt, cfps = p.capture_fps || vfps;
+    const i0 = Math.max(0, Math.floor((p.start_s || 0) / dt));
+    const i1 = Math.min(pts.length - 1, p.end_s ? Math.ceil(p.end_s / dt) : pts.length - 1);
+    if (i1 - i0 < 10) throw new Error('分析區間太短（至少需要 10 幀）');
+    job.total = i1 - i0 + 1; job.message = '載入姿態模型與運算引擎…';
+    const pyP = PYC(); pyP.catch(() => {});
+    v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.src = URL.createObjectURL(file);
+    await new Promise((ok, bad) => { v.onloadedmetadata = ok; v.onerror = () => bad(new Error('瀏覽器無法解碼此影片（可能是 HEVC）；請改用 Safari / Chrome，或把手機相機格式改成「最相容」')); });
+    L = await pose(p.model || 'full'); job.message = '';
+    const frames = [], viewer = []; let last = -1;
+    for (let k = i0; k <= i1; k++) {
+      await seek(v, k + 1 < pts.length ? (pts[k] + pts[k + 1]) / 2 : pts[k] + dt / 2);   // 跳到該幀的中點
+      last = Math.max(last + 1, Math.round(pts[k] * 1000));
+      const q = L.detectForVideo(v, last).landmarks[0];
+      if (q) {
+        frames.push({i: k, t: k / cfps * 1000, lm: q.map(a => [a.x, a.y, a.z, a.visibility || 0])});
+        viewer.push({i: k, p: q.map(a => [+a.x.toFixed(4), +a.y.toFixed(4), +(a.visibility || 0).toFixed(3)])});
+      }
+      job.done = k - i0 + 1;
+    }
+    job.message = '計算運動學…';
+    const meta = await kget('meta:' + sid);
+    Object.assign(meta, {width: v.videoWidth, height: v.videoHeight, fps: cfps, video_fps: vfps, source: 'video'});
+    const res = JSON.parse((await pyP).finalize(JSON.stringify(frames), JSON.stringify(meta)));
+    const info = {frames_total: job.total, frames_detected: frames.length, capture_fps: cfps, video_fps: vfps, duration_s: +(job.total / cfps).toFixed(3), width: v.videoWidth, height: v.videoHeight};
+    await kset('lm:' + sid, {video_fps: vfps, capture_fps: cfps, width: v.videoWidth, height: v.videoHeight, n_frames: pts.length, handedness: meta.handedness, frames: viewer});
+    await kset('data:' + sid, {raw_csv: res.raw_csv, kinematics_csv: res.kinematics_csv, legacy_csv: res.legacy_csv, metrics: res.metrics, info});
+    await kset('meta:' + sid, meta);
+    Object.assign(job, {status: 'done', info, metrics: res.metrics, message: ''});
+  } catch (e) { Object.assign(job, {status: 'error', message: lastLine(e)}); }
+  finally { if (v) URL.revokeObjectURL(v.src); if (L) L.close(); }
+}
+
+// ---------- 投手資料 ----------
+const PF = ['handedness', 'height_cm', 'weight_kg', 'upper_arm_cm', 'forearm_cm', 'age', 'ir_rom_throw_deg', 'ir_rom_other_deg', 'ir_trials_throw', 'ir_trials_other', 'notes'];
+async function upsert(name, f) {
+  if (!name) throw new Error('姓名不可空白');
+  const P = (await kget('pitchers')) || {}, cur = P[name] || {name, created_at: now()};
+  for (const k of PF) if (f[k] != null && f[k] !== 0) cur[k] = f[k];
+  cur.updated_at = now(); P[name] = cur; await kset('pitchers', P);
+  return cur;
+}
+async function history(name) {
+  const rows = (await kall('meta:')).filter(m => m.pitcher_name === name)
+    .map(m => ({session_id: m.sid, created_at: m.created_at, camera_role: m.camera_role, fps: m.fps, ...(m.summary || {})}));
+  return rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+}
+
+// ---------- 路由：與伺服器版 API 相同 ----------
+const J = (o, status = 200) => new Response(JSON.stringify(o), {status, headers: {'Content-Type': 'application/json'}});
+const fail = (m, s = 400) => J({detail: m}, s);
+const CSV = {kinematics: 'kinematics_csv', raw: 'raw_csv', dynamics: 'dyn_csv'};
+async function local(url, opt) {
+  const u = new URL(url, location.origin), seg = u.pathname.split('/').filter(Boolean).slice(1), m = (opt.method || 'GET').toUpperCase();
+  let body = {}; if (typeof opt.body === 'string') { try { body = JSON.parse(opt.body); } catch {} }
+  try {
+    if (seg[0] === 'pitchers') {
+      if (seg[1] === 'history') return J(await history(u.searchParams.get('name')));
+      if (m === 'POST') return J(await upsert((body.name || '').trim(), body));
+      return J(Object.values((await kget('pitchers')) || {}).sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')));
+    }
+    if (seg[0] !== 'sessions') return fail('not found', 404);
+    if (m === 'POST' && !seg[1]) {
+      const sid = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+      const meta = {...body, sid, pitcher_name: (body.pitcher_name || '').trim() || '未命名', created_at: now()};
+      await kset('meta:' + sid, meta);
+      if (meta.pitcher_name !== '未命名') await upsert(meta.pitcher_name, meta);
+      return J({session_id: sid});
+    }
+    const sid = seg[1], act = seg[2], meta = await kget('meta:' + sid);
+    if (!meta) return fail('session not found', 404);
+    if (act === 'video') return J({received: 0});                       // 影片不上傳，直接在本機讀取
+    if (act === 'analyze') {
+      const file = document.getElementById('file').files[0];
+      if (!file) return fail('找不到影片檔');
+      runJob(sid, file, body); return J({ok: true});
+    }
+    const data = (await kget('data:' + sid)) || null;
+    if (act === 'status') return J(jobs[sid] || (data ? {status: 'done', info: data.info, metrics: data.metrics} : {status: 'none'}));
+    if (act === 'landmarks') { const L = await kget('lm:' + sid); return L ? J(L) : fail('尚未完成影片分析', 404); }
+    if (!data) return fail('尚未完成影片分析');
+    if (act === 'dynamics' && m === 'POST') {
+      const core = await PYC();
+      const prm = {cutoff_hz: body.cutoff_hz ?? 6, ball_kg: body.ball_kg ?? 0.145, fc_ms: body.fc_ms ?? null, mer_ms: body.mer_ms ?? null, mer_deg: body.mer_deg ?? null, mer_offset_deg: body.mer_offset_deg ?? 0, calibration_factor: body.calibration_factor ?? null, br_ms: body.br_ms ?? null};
+      const r = JSON.parse(core.dynamics(data.raw_csv, JSON.stringify(meta), JSON.stringify(prm)));
+      data.dyn_csv = r.csv; data.dyn_metrics = r.metrics; await kset('data:' + sid, data);
+      const mt = r.metrics, ph = mt.phases || {}, a = mt.assessment || {};
+      meta.summary = {varus_cocking: (ph.cocking || {}).varus_peak_Nm, varus_accel: (ph.acceleration || {}).varus_peak_Nm,
+        medial_cocking: (ph.cocking || {}).medial_peak_N, medial_accel: (ph.acceleration || {}).medial_peak_N,
+        stride_pct: (mt.kinematics || {}).stride_pct_height, overall: a.overall, flagged: a.flagged || []};
+      await kset('meta:' + sid, meta);
+      return J(mt);
+    }
+    if (act === 'dynamics_metrics') return data.dyn_metrics ? J(data.dyn_metrics) : fail('尚未計算', 404);
+    const text = act === 'legacy' ? '\ufeff' + data.legacy_csv : data[CSV[act]];
+    return text ? new Response(new Blob([text], {type: 'text/csv'})) : fail('not ready', 404);
+  } catch (e) { return fail(lastLine(e), 500); }
+}
+
+const realFetch = window.fetch.bind(window);
+window.fetch = (url, opt = {}) => {
+  const s = typeof url === 'string' ? url : url.url;
+  if (s === '/healthz') return Promise.resolve(J({ok: true, mode: 'browser'}));
+  return s.startsWith('/api/') ? local(s, opt) : realFetch(url, opt);
+};
+})();
+
+</script>
+<script type="text/plain" id="py-core">
+"""純運算核心（不依賴 FastAPI）。伺服器版與瀏覽器版（Pyodide）共用。"""
+import io
+import json
+import math
+
+import numpy as np
+import pandas as pd
+
+import biomech
+import thresholds
+
+# MediaPipe Pose landmark index
+JOINTS = {
+    "l_shoulder": 11, "r_shoulder": 12,
+    "l_elbow": 13, "r_elbow": 14,
+    "l_wrist": 15, "r_wrist": 16,
+    "l_hip": 23, "r_hip": 24,
+    "l_pinky": 17, "r_pinky": 18, "l_index": 19, "r_index": 20,  # 手部方向（逆向動力學用）
+    "l_ankle": 27, "r_ankle": 28,                                  # 前腳著地偵測用
+}
+
+
+def row_from_lm(i, t_ms, lm):
+    """33 個 landmark → 一列 CSV（只保留需要的關節）"""
+    r = {"frame": i, "t_ms": t_ms}
+    for name, idx in JOINTS.items():
+        x, y, z, v = (lm[idx] + [0, 0, 0, 0])[:4]
+        r.update({f"{name}_x": x, f"{name}_y": y, f"{name}_z": z, f"{name}_v": v})
+    return r
+
+
+def _angle3(a, b, c):
+    """b 為頂點，回傳 ∠abc（度）"""
+    v1, v2 = a - b, c - b
+    cos = (v1 * v2).sum(1) / (np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1) + 1e-9)
+    return np.degrees(np.arccos(np.clip(cos, -1, 1)))
+
+
+def _wrap(deg):
+    return (deg + 180) % 360 - 180
+
+
+def analyze(df: pd.DataFrame, meta: dict):
+    w, h = meta["width"], meta["height"]
+
+    def P(name):  # 轉為像素比例，避免長寬比造成角度失真
+        return np.c_[df[f"{name}_x"] * w, df[f"{name}_y"] * h, df[f"{name}_z"] * w]
+
+    side = "r" if meta["handedness"] == "R" else "l"
+    sh, el, wr = P(f"{side}_shoulder"), P(f"{side}_elbow"), P(f"{side}_wrist")
+    t = df["t_ms"].to_numpy() / 1000.0
+
+    # 以軀幹長度正規化，速度單位 = 軀幹長/秒（與拍攝距離無關）
+    mid_sh = (P("l_shoulder") + P("r_shoulder")) / 2
+    mid_hip = (P("l_hip") + P("r_hip")) / 2
+    torso = np.median(np.linalg.norm(mid_sh - mid_hip, axis=1))
+
+    def smooth(a):
+        return pd.DataFrame(a).rolling(3, center=True, min_periods=1).mean().to_numpy()
+
+    wr_s = smooth(wr)
+    vel = np.gradient(wr_s, t, axis=0)
+    speed = np.linalg.norm(vel, axis=1) / torso
+
+    sh_line = P("r_shoulder") - P("l_shoulder")
+    hip_line = P("r_hip") - P("l_hip")
+    sh_ang = np.degrees(np.arctan2(sh_line[:, 2], sh_line[:, 0]))  # 俯視旋轉 (x-z 平面)
+    hip_ang = np.degrees(np.arctan2(hip_line[:, 2], hip_line[:, 0]))
+
+    out = pd.DataFrame({
+        "frame": df["frame"], "t_ms": df["t_ms"],
+        "elbow_angle_deg": smooth(_angle3(sh, el, wr)).ravel(),
+        "wrist_speed_torso_per_s": speed,
+        "shoulder_rot_deg": sh_ang, "hip_rot_deg": hip_ang,
+        "hip_shoulder_sep_deg": _wrap(sh_ang - hip_ang),
+    })
+    k = int(np.argmax(speed))
+    metrics = {
+        "frames": len(df),
+        "duration_s": round(float(t[-1] - t[0]), 3),
+        "effective_fps": round(float((len(df) - 1) / (t[-1] - t[0] + 1e-9)), 1),
+        "peak_wrist_speed_torso_per_s": round(float(speed[k]), 2),
+        "peak_wrist_speed_frame": int(df["frame"].iloc[k]),
+        "max_elbow_angle_deg": round(float(out.elbow_angle_deg.max()), 1),
+        "min_elbow_angle_deg": round(float(out.elbow_angle_deg.min()), 1),
+        "max_hip_shoulder_sep_deg": round(float(out.hip_shoulder_sep_deg.abs().max()), 1),
+        "mean_landmark_visibility": round(float(df.filter(like="_v").mean().mean()), 3),
+    }
+    return out, metrics
+
+
+
+def _clean(o):
+    """NaN/Inf → None，確保輸出是合法 JSON"""
+    if isinstance(o, dict):
+        return {k: _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    if isinstance(o, (np.floating, float)):
+        return None if not math.isfinite(o) else float(o)
+    if isinstance(o, np.integer):
+        return int(o)
+    return o
+
+
+def legacy_csv(df, m):
+    """原 Colab pitcher_pose2d_data.csv 的欄位格式（像素座標、投球側）"""
+    s = "r" if m["handedness"] == "R" else "l"
+    out = pd.DataFrame({
+        "pitcher_id": m.get("pitcher_name") or m.get("pitcher_id", ""),
+        "handedness": "Right" if s == "r" else "Left",
+        "height_cm": m["height_cm"], "weight_kg": m["weight_kg"],
+        "upper_arm_cm": m["upper_arm_cm"], "forearm_cm": m["forearm_cm"],
+        "camera_role": m["camera_role"],
+        "timestamp": df["t_ms"] / 1000.0, "frame_index": df["frame"],
+    })
+    for j in ("shoulder", "elbow", "wrist", "hip"):
+        out[f"{j}_x"] = df[f"{s}_{j}_x"] * m["width"]
+        out[f"{j}_y"] = df[f"{s}_{j}_y"] * m["height"]
+    out["visibility_elbow"] = df[f"{s}_elbow_v"]
+    return out.to_csv(index=False)
+
+
+def finalize(frames_json, meta_json):
+    """frames: [{i, t(ms), lm:[[x,y,z,v]*33]}] → 原始座標 / 運動學 / 舊格式 CSV 與摘要"""
+    frames, meta = json.loads(frames_json), json.loads(meta_json)
+    rows = [row_from_lm(f["i"], f["t"], f["lm"]) for f in frames if len(f["lm"]) >= 33]
+    df = pd.DataFrame(rows).drop_duplicates("frame").sort_values("frame").reset_index(drop=True)
+    if len(df) < 10:
+        raise ValueError("偵測到人體的影格太少（<10），請確認投手完整入鏡、光線足夠")
+    out, metrics = analyze(df, meta)
+    return json.dumps(_clean({"metrics": metrics, "raw_csv": df.to_csv(index=False),
+                              "kinematics_csv": out.to_csv(index=False), "legacy_csv": legacy_csv(df, meta)}))
+
+
+def dynamics(raw_csv, meta_json, params_json):
+    """逆向動力學 + 示警門檻"""
+    df = pd.read_csv(io.StringIO(raw_csv))
+    meta, params = json.loads(meta_json), json.loads(params_json)
+    cf = params.pop("calibration_factor", None)
+    out, metrics = biomech.run(df, meta, **{k: v for k, v in params.items() if v is not None})
+    metrics["assessment"] = thresholds.assess(meta, metrics, calibration_factor=cf)
+    return json.dumps(_clean({"metrics": metrics, "csv": out.to_csv(index=False)}))
+
+</script>
+<script type="text/plain" id="py-biomech">
+"""逆向動力學：手(+球) → 腕 → 肘 的牛頓‑歐拉運算（對應你提供的 Matlab 四個步驟）。
+
+座標系：X=影像右、Y=上、Z=朝向鏡頭（右手系），單位 m；重力 g=(0,-9.81,0)（假設相機水平放置）。
+符號約定：F_elbow、tau_elbow = 上臂施於前臂的力/力矩；F_wrist、tau_wrist = 前臂施於手的力/力矩
+（前臂受到的是其反作用力 -F_wrist、-tau_wrist）。公式中的 r 一律是「由重心指向關節」的位置向量。
+"""
+import numpy as np
+import pandas as pd
+from scipy.signal import butter, filtfilt
+
+G = np.array([0.0, -9.81, 0.0])
+# (質量占體重比, 重心距近端比例, 對重心迴旋半徑/肢段長)：Dempster，採 Winter(2009) 表
+BSP = {"upper_arm": (0.028, 0.436, 0.322), "forearm": (0.016, 0.430, 0.303), "hand": (0.006, 0.506, 0.297)}
+LEN_FRAC = {"upper_arm": 0.186, "forearm": 0.146, "hand": 0.108}  # 占身高比例（未輸入實測長度時使用）
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
+
+def _unit(v):
+    return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)
+
+
+def _lowpass(x, fs, fc):
+    b, a = butter(2, min(fc, 0.45 * fs) / (fs / 2))  # filtfilt 正反各一次：零相位、等效 4 階
+    return filtfilt(b, a, x, axis=0)
+
+
+def _omega(u, dt):
+    """單位向量 u(t) 的角速度（垂直長軸分量）：ω = u × du/dt"""
+    return np.cross(u, np.gradient(u, dt, axis=0))
+
+
+def _fill_short_gaps(x, fs, max_gap_s=0.06):
+    """【修改3】短缺口（≤60 ms）以前後有效值線性內插；長缺口保持 NaN，不憑空捏造資料。回傳 (陣列, 補了幾點)"""
+    y, n = x.copy(), 0
+    bad = ~np.isfinite(y)
+    if not bad.any() or bad.all():
+        return y, 0
+    idx = np.flatnonzero(bad)
+    for seg in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+        a, c = seg[0], seg[-1]
+        if a > 0 and c < len(y) - 1 and (c - a + 1) / fs <= max_gap_s:
+            y[a:c + 1] = np.interp(np.arange(a, c + 1), [a - 1, c + 1], [y[a - 1], y[c + 1]])
+            n += len(seg)
+    return y, n
+
+
+def _hampel(x, k, n_sigma=5.0):
+    """【修改3】Hampel 離群值抑制：偏離滑動中位數超過 n_sigma×1.4826×MAD 的點以中位數取代。
+    力矩已經過 6 Hz 低通而相當平滑，所以只會抓到 1–2 幀的軸向突波，不會削掉真正寬闊的峰值。"""
+    y, n_fix = x.copy(), 0
+    for i in range(len(x)):
+        w = x[max(0, i - k): i + k + 1]
+        w = w[np.isfinite(w)]
+        if len(w) < 3 or not np.isfinite(x[i]):
+            continue
+        med = np.median(w)
+        mad = 1.4826 * np.median(np.abs(w - med))
+        if mad > 0 and abs(x[i] - med) > n_sigma * mad:
+            y[i], n_fix = med, n_fix + 1
+    return y, n_fix
+
+
+def _I(u, It, w):
+    """軸對稱肢段 I·w。繞長軸的 Il 無法由點標記觀測，取 0.05·It；
+    因 ω、α 皆垂直長軸，結果與 Il 無關。"""
+    par = (u * w).sum(1, keepdims=True) * u
+    It = np.asarray(It, dtype=float)
+    if It.ndim == 1:                      # 【修改1】手+球的慣量隨時間改變（球離手後下降）→ 逐幀陣列
+        It = It[:, None]
+    return It * (w - par) + 0.05 * It * par
+
+
+def _r(x, n=2):
+    return None if x is None or not np.isfinite(x) else round(float(x), n)
+
+
+def run(df, meta, cutoff_hz=6.0, ball_kg=0.145, fc_ms=None, br_ms=None, mer_ms=None, mer_deg=None, mer_offset_deg=0.0, ball_offset_m=0.0, despike=True):
+    W_kg = float(meta.get("weight_kg") or 0)
+    if W_kg <= 0:
+        raise ValueError("需要體重 weight_kg > 0")
+    H_m = float(meta.get("height_cm") or 0) / 100
+    right = meta["handedness"] == "R"
+    s, lead = ("r", "l") if right else ("l", "r")
+    need = [f"{s}_{j}_{c}" for j in ("shoulder", "elbow", "wrist", "pinky", "index") for c in "xyz"]
+    if any(c not in df.columns for c in need):
+        raise ValueError("此錄影缺少手部關節（小指/食指）資料，請用新版前端重新錄影")
+    if len(df) < 30:
+        raise ValueError("影格太少（< 30）")
+
+    # --- 第一步：重取樣到等間隔 → 6 Hz 低通 → 二次微分 ---
+    t_raw = df["t_ms"].to_numpy() / 1000.0
+    fs = float(np.clip(round(1.0 / np.median(np.diff(t_raw))), 20, 1000))
+    dt = 1.0 / fs
+    t = np.arange(t_raw[0], t_raw[-1], dt)
+
+    def pt(name):
+        c = [np.interp(t, t_raw, df[f"{name}_{k}"].to_numpy()) for k in "xyz"]
+        return np.c_[c[0] * meta["width"], -c[1] * meta["height"], -c[2] * meta["width"]]
+
+    P = {n: pt(f"{s}_{n}") for n in ("shoulder", "elbow", "wrist", "pinky", "index")}
+    L_ua = (meta.get("upper_arm_cm") or 0) / 100 or LEN_FRAC["upper_arm"] * H_m
+    L_fa = (meta.get("forearm_cm") or 0) / 100 or LEN_FRAC["forearm"] * H_m
+    L_h = LEN_FRAC["hand"] * H_m
+    if min(L_ua, L_fa, L_h) <= 0:
+        raise ValueError("需要身高，或上臂與前臂長度")
+
+    # 影像單位 → 公尺：用已知上臂/前臂長度（取 90 百分位以減少透視縮短的影響）
+    s1 = L_ua / np.percentile(np.linalg.norm(P["elbow"] - P["shoulder"], axis=1), 90)
+    s2 = L_fa / np.percentile(np.linalg.norm(P["wrist"] - P["elbow"], axis=1), 90)
+    sc = (s1 + s2) / 2
+    f_ = lambda a: _lowpass(a * sc, fs, cutoff_hz)
+    S, E, W, K = f_(P["shoulder"]), f_(P["elbow"]), f_(P["wrist"]), f_((P["pinky"] + P["index"]) / 2)
+    def opt(name):
+        return f_(pt(name)) if f"{name}_x" in df.columns else None
+    ank, piv = opt(f"{lead}_ankle"), opt(f"{s}_ankle")           # 前腳 / 軸心腳踝
+    LS, RS, LH, RH = (opt(n) for n in ("l_shoulder", "r_shoulder", "l_hip", "r_hip"))
+
+    d1 = lambda a: np.gradient(a, dt, axis=0)
+    Gf = E + BSP["forearm"][1] * (W - E)   # 前臂重心
+    Gh = W + BSP["hand"][1] * (K - W)      # 手重心（球視為位於手重心的質點）
+    a_Gf, a_Gh = d1(d1(Gf)), d1(d1(Gh))
+    hand_speed = np.linalg.norm(d1(K), axis=1)
+
+    # --- 事件：BR（球離手）≈ 手速峰值；FC（前腳著地）≈ 前腳踝速度從峰值降到 20% ---
+    warn, edge = [], 5
+    ib = int(np.argmin(abs(t - br_ms / 1000))) if br_ms is not None else edge + int(np.argmax(hand_speed[edge:-edge]))
+    t_br = t[ib]
+    if fc_ms is not None:
+        t_fc, src = fc_ms / 1000.0, "manual"
+    else:
+        t_fc, src = None, "auto"
+        if ank is not None:
+            sa = np.linalg.norm(d1(ank), axis=1)
+            lo = int(np.searchsorted(t, t_br - 0.8))
+            if ib - lo > 5:
+                ip = lo + int(np.argmax(sa[lo:ib]))
+                below = np.where(sa[ip:ib] < 0.2 * sa[ip])[0]
+                if len(below):
+                    t_fc = t[ip + below[0]]
+        if t_fc is None:
+            t_fc = t_br - 0.15
+            warn.append("無法由前腳踝偵測 FC，暫以 BR 前 150 ms 代替；建議手動指定 fc_ms")
+    if t_fc >= t_br:
+        raise ValueError("FC 必須早於 BR，請手動指定 fc_ms / br_ms")
+    win = (t >= t_fc) & (t <= t_br)
+    if win.sum() < 3:
+        raise ValueError("FC–BR 區間內影格不足")
+
+    ifc = int(np.argmin(abs(t - t_fc)))
+
+    # --- 肩外旋（ER）代理值：骨架點量不到肩軸向旋轉，改用 90/90 姿勢下「前臂方向」近似 ---
+    # 前臂朝投擲方向＝0°、垂直向上＝90°、向後仰到水平＝180°；投擲方向取 BR 時手速的水平方向（側面機位最準）
+    vh = d1(K)[ib][[0, 2]]
+    dirn = vh / np.linalg.norm(vh) if hand_speed[ib] > 0 and np.linalg.norm(vh) > 0.3 * hand_speed[ib] else None
+    uf0 = _unit(W - E)
+    er = ((np.degrees(np.arctan2(uf0[:, 1], uf0[:, [0, 2]] @ dirn)) + 90) % 360 - 90) if dirn is not None else None
+    if mer_ms is not None:
+        t_mer, mer_src = float(mer_ms) / 1000.0, "manual"
+    else:
+        t_mer, mer_src = None, "auto"
+        if er is not None:
+            idx = np.where(win)[0]
+            im = idx[int(np.argmax(er[idx]))]                     # ER 代理值最大的時刻 ≈ MER
+            if idx[0] < im < idx[-1]:
+                t_mer = t[im]
+        if t_mer is None:
+            t_mer = t_fc + 0.8 * (t_br - t_fc)
+            warn.append("無法由前臂後仰判斷 MER，暫取 FC→BR 的 80% 處")
+        warn.append("MER 為估計值；建議在檢視器手動標記 FC / MER / BR 以提高分期準確度")
+    t_mer = min(max(t_mer, t_fc), t_br)
+    cock = (t >= t_fc) & (t < t_mer)        # 手臂後拉期 FC→MER
+    acc = (t >= t_mer) & (t <= t_br)        # 手臂加速期 MER→BR
+
+    # --- 第二、三步：BSP + 由末端向近端的牛頓‑歐拉 ---
+    m_f, m_h = BSP["forearm"][0] * W_kg, BSP["hand"][0] * W_kg
+    It_f = m_f * (BSP["forearm"][2] * L_fa) ** 2
+    It_h = m_h * (BSP["hand"][2] * L_h) ** 2                   # 純手：繞「手自己重心」的橫向慣量
+    u_h, u_f, u_u = _unit(K - W), _unit(W - E), _unit(E - S)
+    w_h, w_f, w_u = _omega(u_h, dt), _omega(u_f, dt), _omega(u_u, dt)
+    al_h, al_f = d1(w_h), d1(w_f)
+
+    # 【修改1】手＋球視為剛體：球 = 質點，位於指關節中點 K（可用 ball_offset_m 沿手的長軸再往外移，例如 0.03 m）。
+    #   合成質心 G_hb = (m_h·G_h + m_b·K_ball)/(m_h + m_b)
+    #   合成慣量（平行軸定理）I_hb = I_h + m_h·|G_h − G_hb|² + m_b·|K_ball − G_hb|²（距離皆沿手的長軸，故貢獻橫向慣量）
+    #   球離手（t > BR）後 m_b = 0，退回純手參數。
+    m_b = np.where(t <= t_br, ball_kg, 0.0)
+    K_ball = K + ball_offset_m * u_h
+    m_hb = m_h + m_b
+    Ghb = (m_h * Gh + m_b[:, None] * K_ball) / m_hb[:, None]
+    It_hb = It_h + m_h * np.linalg.norm(Gh - Ghb, axis=1) ** 2 + m_b * np.linalg.norm(K_ball - Ghb, axis=1) ** 2
+    a_Kb = d1(d1(K_ball))
+    # 力：各質點牛頓定律相加（對手和球「分別」二次微分，避免對球離手瞬間的質心跳變做微分而產生突波）
+    F_w = m_h * (a_Gh - G) + m_b[:, None] * (a_Kb - G)
+    # 力矩：繞合成質心的歐拉方程  tau_w + (W − G_hb)×F_w = I_hb·α + ω×(I_hb·ω)
+    tau_w = _I(u_h, It_hb, al_h) + np.cross(w_h, _I(u_h, It_hb, w_h)) - np.cross(W - Ghb, F_w)
+
+    # 前臂：F_elbow = F_wrist + m_f(a - g)
+    F_e = F_w + m_f * (a_Gf - G)
+    # tau_elbow = tau_wrist + Iα + ω×Iω - r_E×F_elbow - r_W×(-F_wrist)
+    tau_e = (tau_w + _I(u_f, It_f, al_f) + np.cross(w_f, _I(u_f, It_f, w_f))
+             - np.cross(E - Gf, F_e) + np.cross(W - Gf, F_w))
+
+    # 肘解剖軸：f = 屈曲軸；內側 m = ∓f（右臂 -f、左臂 +f）；內翻軸 = 前臂長軸 × m
+    cr = np.cross(E - S, W - E)
+    sin_ang = np.linalg.norm(cr, axis=1) / (np.linalg.norm(E - S, axis=1) * np.linalg.norm(W - E, axis=1) + 1e-9)
+    f = _unit(cr); f[sin_ang < 0.05] = np.nan                  # 手臂接近伸直時軸不可定義
+    med = f * (-1.0 if right else 1.0)
+    F_med = (F_e * med).sum(1)
+    F_ax = (F_e * u_f).sum(1)
+    T_var = (tau_e * np.cross(u_f, med)).sum(1)
+    T_flex = (tau_e * f).sum(1)
+
+    # 【修改3】手臂接近伸直（夾角 <~3°）時屈曲軸 f 無法定義 → F_med / T_var / T_flex 為 NaN。
+    # 先對短缺口（≤60 ms）線性內插，再用 Hampel 抑制殘餘的 1–2 幀突波；長缺口維持 NaN。
+    axis_bad = ~np.isfinite(f[:, 0])
+    n_fill = n_spike = 0
+    k_h = max(2, int(round(0.02 * fs)))
+    cleaned = []
+    for arr in (F_med, T_var, T_flex):
+        arr, nf = _fill_short_gaps(arr, fs)
+        n_fill += nf
+        if despike:
+            arr, ns = _hampel(arr, k_h)
+            n_spike += ns
+        cleaned.append(arr)
+    F_med, T_var, T_flex = cleaned
+
+    # --- 第四步：功率與做功 ---
+    P_joint = (tau_e * (w_f - w_u)).sum(1)    # 關節功率（用前臂相對上臂角速度，標準定義）
+    P_fore = (tau_e * w_f).sum(1)             # 依你原式 τ·ω（ω 為前臂絕對角速度）
+
+    def work(p, m):
+        return {"net_J": round(float(_trapz(p[m], t[m])), 2),
+                "positive_J": round(float(_trapz(np.maximum(p[m], 0), t[m])), 2),
+                "negative_J": round(float(_trapz(np.minimum(p[m], 0), t[m])), 2)}
+
+    def peak(a):
+        b = np.where(win & np.isfinite(a), a, -np.inf)
+        i = int(np.argmax(b))
+        return (None, None) if not np.isfinite(b[i]) else (float(a[i]), round(float((t[i] - t_br) * 1000), 1))
+
+    (pm, pm_t), (pv, pv_t), (pf, pf_t) = peak(F_med), peak(T_var), peak(T_flex)
+    r2 = lambda x: None if x is None else round(x, 2)
+    metrics = {
+        "events": {"fc_ms": round(t_fc * 1000, 1), "mer_ms": round(t_mer * 1000, 1), "br_ms": round(t_br * 1000, 1),
+                   "source": src, "mer_source": mer_src},
+        "peak_elbow_medial_force_N": r2(pm), "peak_elbow_medial_force_kgf": r2(pm and pm / 9.81),
+        "peak_elbow_medial_force_pct_BW": r2(pm and pm / (W_kg * 9.81) * 100), "medial_force_time_rel_BR_ms": pm_t,
+        "peak_elbow_varus_torque_Nm": r2(pv), "varus_torque_time_rel_BR_ms": pv_t,
+        "peak_elbow_flexion_torque_Nm": r2(pf), "flexion_torque_time_rel_BR_ms": pf_t,
+        "work_FC_to_BR_joint_power": work(P_joint, win),
+        "work_FC_to_BR_on_forearm_power": work(P_fore, win),
+        "work_by_phase_joint_power": {"cocking": work(P_joint, cock), "acceleration": work(P_joint, acc)},
+        "fs_hz": fs, "cutoff_hz": cutoff_hz, "scale_consistency_upperarm_vs_forearm": round(float(s1 / s2), 3),
+        "warnings": warn,
+        "accuracy_note": "單鏡頭姿態估計＋二次微分，數值適合同一投手的前後比較，不等同動作捕捉實驗室絕對值",
+    }
+    def pstat(a, m_):
+        x = a[m_ & np.isfinite(a)]
+        return (None, None) if len(x) == 0 else (float(x.max()), float(x.mean()))
+
+    metrics["phases"] = {}
+    for nm, m_ in (("cocking", cock), ("acceleration", acc)):
+        (vp, vm), (fp, fm) = pstat(T_var, m_), pstat(F_med, m_)
+        metrics["phases"][nm] = {"frames": int(m_.sum()), "varus_peak_Nm": _r(vp), "varus_mean_Nm": _r(vm),
+                                 "medial_peak_N": _r(fp), "medial_mean_N": _r(fm)}
+
+    # --- 運動學指標（供示警門檻使用）---
+    nan = np.full(len(t), np.nan)
+    have_trunk = all(x is not None for x in (LS, RS, LH, RH))
+    if have_trunk:
+        down = (LH + RH) / 2 - (LS + RS) / 2                                  # 軀幹向下軸
+        abd = np.degrees(np.arccos(np.clip((_unit(E - S) * _unit(down)).sum(1), -1, 1)))
+        az = lambda p, q: np.degrees(np.arctan2((q - p)[:, 2], (q - p)[:, 0]))  # 連線在 X-Z 平面的方位角
+        sep = (az(LS, RS) - az(LH, RH) + 180) % 360 - 180
+    else:
+        abd, sep = nan, nan
+    flex = 180 - np.degrees(np.arccos(np.clip((_unit(S - E) * _unit(W - E)).sum(1), -1, 1)))
+    imer = int(np.argmin(abs(t - t_mer)))
+    wide = (t >= t_fc - 0.25) & (t <= t_br)
+    stride, basis = None, None
+    if ank is not None and piv is not None:
+        dx, dz = (ank - piv)[ifc, 0], (ank - piv)[ifc, 2]
+        side_cam = "side" in str(meta.get("camera_role", "")).lower()
+        stride, basis = (abs(dx), "image_plane_x") if side_cam else (float(np.hypot(dx, dz)), "horizontal_xz")
+    metrics["kinematics"] = {
+        "stride_m": _r(stride), "stride_basis": basis,
+        "stride_pct_height": _r(stride / H_m * 100, 1) if stride is not None and H_m > 0 else None,
+        "shoulder_abduction_at_fc_deg": _r(abd[ifc], 1), "elbow_flexion_at_fc_deg": _r(flex[ifc], 1),
+        "hip_shoulder_sep_at_fc_deg": _r(sep[ifc], 1), "hip_shoulder_sep_at_mer_deg": _r(sep[imer], 1),
+        "max_hip_shoulder_sep_deg": _r(np.nanmax(np.abs(sep[wide])), 1) if have_trunk else None,
+    }
+
+    # --- 迴歸式：預測峰值肘外翻力矩 PEVT（外翻負荷 = 肘內翻力矩的反作用；取 FC→BR 內內翻力矩峰值的時刻）---
+    # 【修改2】係數與截距完全照你提供的原文，不擅自改正負號。
+    #  · 出處：Nebel & Schmitt (2026)。其論文碩士版摘要報告最大肩外旋角與 PEVT 呈負相關（r = −0.651），與 −1.666 的負號一致；
+    #    多元迴歸係數本來就是控制其他變數後的偏效應，負號不代表錯。該式 MER 為盂肱關節外旋角，這裡只能用前臂方向近似。
+    #  · 代入典型值 MER=175°、BR 屈曲=25°、PEVT 屈曲=95°、EFtime=40% → 約 +150，並非負值。
+    #  · 真正會出錯的是「MER 的定義」。若文獻的 MER 是相對某基準線的偏差量，請用 mer_offset_deg 指定基準
+    #    （例如 90），程式在代入前先扣掉；基準不明時維持預設 0（絕對角度）。
+    #  · 加上輸入範圍保護與物理合理性檢查（預測值 ≤0 不輸出）。
+    reg = {"formula": "PEVT = -1.666·MER - 2.377·屈曲@BR + 1.554·屈曲@PEVT - 0.279·EFtime + 364.973",
+           "cycle": "投球週期＝FC(0%)→BR(100%)", "mer_offset_deg": float(mer_offset_deg)}
+    okT = win & np.isfinite(T_var) & np.isfinite(flex)
+    if okT.any():
+        ip = int(np.argmax(np.where(okT, T_var, -np.inf)))
+        ie = int(np.argmax(np.where(win & np.isfinite(flex), flex, -np.inf)))
+        ef_time = (t[ie] - t_fc) / (t_br - t_fc) * 100
+        mer_abs = float(mer_deg) if mer_deg is not None else (float(np.nanmax(er[win])) if er is not None else None)
+        fl_br, fl_pv = float(flex[ib]), float(flex[ip])
+        reg["inputs"] = {"mer_deg": _r(mer_abs, 1), "mer_source": "manual" if mer_deg is not None else "estimated",
+                         "elbow_flexion_at_br_deg": _r(fl_br, 1), "elbow_flexion_at_pevt_deg": _r(fl_pv, 1),
+                         "ef_time_pct": _r(ef_time, 1), "pevt_time_pct": _r((t[ip] - t_fc) / (t_br - t_fc) * 100, 1)}
+        if mer_abs is None:
+            reg["note"] = "無法估計 MER 角度（投擲方向不明，非側面機位常見），請手動輸入 MER 角度"
+        elif not (60 <= mer_abs <= 240 and 0 <= fl_br <= 180 and 0 <= fl_pv <= 180 and 0 <= ef_time <= 100):
+            reg["note"] = "輸入超出合理範圍（MER 60–240°、屈曲 0–180°、EFtime 0–100%），不計算預測值"
+        else:
+            pred = -1.666 * (mer_abs - mer_offset_deg) - 2.377 * fl_br + 1.554 * fl_pv - 0.279 * ef_time + 364.973
+            reg["sensitivity_per_10deg_mer"] = round(-16.66, 2)      # MER 每差 10°，預測值差約 16.7
+            if pred <= 0:
+                reg["note"] = f"預測值 {pred:.1f} ≤ 0，不符物理意義：請確認 MER 定義（可用 mer_offset_deg 平移）或輸入是否異常"
+            else:
+                reg["predicted"] = _r(pred)
+    else:
+        reg["note"] = "FC–BR 區間內資料不足"
+    reg["measured_peak_valgus_torque_Nm"] = metrics["peak_elbow_varus_torque_Nm"]
+    metrics["regression_pevt"] = reg
+    metrics["quality"] = {"axis_undefined_pct_in_window": _r(float(axis_bad[win].mean() * 100), 1),
+                          "interpolated_samples": int(n_fill), "despiked_samples": int(n_spike),
+                          "ball_model": "手+球合成質心與平行軸慣量；球離手後退回純手"}
+    if axis_bad[win].mean() > 0.1:
+        warn.append("FC–BR 區間內超過 10% 影格手臂接近伸直（肘軸不可定義），內側力/內翻力矩已內插，峰值請保守解讀")
+
+    if not 0.8 <= s1 / s2 <= 1.25:
+        warn.append("上臂/前臂尺度估計差異大（透視或輸入長度不準），力與力矩可能偏差")
+
+    out = pd.DataFrame({
+        "t_ms": t * 1000, "in_FC_BR_window": win.astype(int), "hand_speed_m_s": hand_speed,
+        "elbow_medial_force_N": F_med, "elbow_axial_force_N": F_ax,
+        "elbow_varus_torque_Nm": T_var, "elbow_flexion_torque_Nm": T_flex,
+        "forearm_omega_rad_s": np.linalg.norm(w_f, axis=1),
+        "elbow_power_joint_W": P_joint, "elbow_power_on_forearm_W": P_fore,
+        "shoulder_abduction_deg": abd, "elbow_flexion_deg": flex, "hip_shoulder_sep_deg": sep,
+        "phase": np.where(cock, 1, np.where(acc, 2, 0)),
+        "shoulder_er_proxy_deg": er if er is not None else nan, "axis_undefined": axis_bad.astype(int),
+    }).round(4)
+    return out, metrics
+
+</script>
+<script type="text/plain" id="py-thresholds">
+"""示警門檻。輸入 biomech.run 的結果與投手資料，輸出各項指標的等級、文獻依據、單鏡頭可靠度與修正說明。
+等級：normal 正常 < watch 注意 < alert 示警 < high 高風險；info 僅供參考；n/a 無法計算。"""
+import statistics
+
+ORDER = {"n/a": -2, "info": -1, "normal": 0, "watch": 1, "alert": 2, "high": 3}
+STAT = "peak"                 # 與常模比較用「各期峰值」；若原始文獻是「各期平均」，改成 "mean"
+ADULT_MIN_AGE = 18            # 【修改4】≥18 歲視為成人（大學生）；<18 歲為青少年（高中生）
+
+# 【修改4】單鏡頭採樣補償因子：校正後值 = 實測值 × calibration_factor，再與常模比較。
+# 預設 1.0（不校正）。常見建議值 1.15–1.25 是「單鏡頭峰值低估 20–30%」的假設，尚未經你的資料驗證；
+# 建議先用同一批投手與動捕或已知系統對照後再調整，因為它會直接改變誰被判成示警。
+CALIBRATION_FACTOR = 1.0
+CAL_RANGE = (0.5, 2.0)
+
+# 【修改5】文獻依據（出處由使用者提供；查證結果寫在每行註解）
+_PENDING = "使用者提供之常模（原始文獻出處待補）"
+REFERENCES = {
+    "inverse_dynamics": "Feltner M, Dapena J. (1986). Dynamics of the shoulder and elbow joints of the throwing arm during a baseball pitch. Int J Sport Biomech 2:235–259",
+    "bsp": "Winter DA. (2009). Biomechanics and Motor Control of Human Movement, 4th ed. Wiley",
+    # 你提供的是「Post EG et al. 2015」；我查不到對應這組預測變數的該篇論文。
+    # 這組變數（最大外旋角、PEVT 時與 BR 時的肘屈曲角、肘屈曲峰值出現在週期的百分比）與下列論文的迴歸式相符，故採用它。
+    "pevt_model": "Nebel AR, Schmitt AC. Predicting elbow valgus torque from upper extremity baseball pitching kinematics using markerless motion capture. Sports Med Health Sci 2026;8(4):426–430. doi:10.1016/j.smhs.2025.02.006（21 位 D1 大學投手，8 機位 300 Hz 無標記動捕，R²=0.593）",
+}
+SOURCES = {k: _PENDING for k in (
+    "kinetic_youth", "gird", "trunk_mer", "trunk_max", "stride_adult", "stride_youth", "abduction_fc", "elbow_flexion_fc")}
+# 成人常模：Fleisig 等人 1999 為真實論文（J Biomech 32(12):1371–1375，比較四個競技層級，8 項動力學參數隨層級上升），
+# 但其下的 mean/SD/示警值是使用者提供，我無法對照原文核實，也無法確認原文有分「後拉期／加速期」。
+SOURCES["kinetic_adult"] = ("Fleisig GS, Barrentine SW, Zheng N, Escamilla RF, Andrews JR. (1999). Kinematic and kinetic comparison of baseball pitching "
+                            "among various levels of development. J Biomech 32(12):1371–1375（常模數值由使用者提供，未能核實）")
+SOURCES["pevt_model"] = REFERENCES["pevt_model"]
+
+# 平均 ± 標準差與示警值；high 一律取 平均 + 2 SD（由平均與 SD 推算，非文獻原值）
+_N = lambda label, unit, mean, sd, alert: dict(label=label, unit=unit, mean=mean, sd=sd, alert=alert)
+KINETIC = {
+    "youth": {  # 你提供的數值；你指出它偏向青少年常模
+        ("cocking", "varus"): _N("手臂後拉期 肘內翻力矩", "N·m", 43.27, 9.66, 51.21),
+        ("acceleration", "varus"): _N("手臂加速期 肘內翻力矩", "N·m", 20.82, 12.87, 32.0),
+        ("cocking", "medial"): _N("手臂後拉期 肘內側力", "N", 185.58, 47.44, 236.75),
+        ("acceleration", "medial"): _N("手臂加速期 肘內側力", "N", 96.26, 53.29, 144.08),
+    },
+    "adult": {  # 成人／大學／職業（≥18 歲）：數值由使用者提供（示警值＝平均＋1SD）
+        ("cocking", "varus"): _N("手臂後拉期 肘內翻力矩", "N·m", 64.0, 12.0, 76.0),
+        ("acceleration", "varus"): _N("手臂加速期 肘內翻力矩", "N·m", 32.0, 14.0, 46.0),
+        ("cocking", "medial"): _N("手臂後拉期 肘內側力", "N", 310.0, 60.0, 370.0),
+        ("acceleration", "medial"): _N("手臂加速期 肘內側力", "N", 160.0, 70.0, 230.0),
+    },
+}
+
+
+def _item(key, label, value, unit, level, rule, *, rel="", rel_level="", source="", correction="", note="", raw=None):
+    r = lambda x: None if x is None else round(float(x), 2)
+    return {"key": key, "label": label, "unit": unit, "level": level, "rule": rule, "value": r(value), "value_raw": r(raw),
+            "source": source or SOURCES.get(key, ""), "reliability": rel, "reliability_level": rel_level,
+            "correction": correction, "note": note}
+
+
+def _na(key, label, unit, why, rule="", **kw):
+    return _item(key, label, None, unit, "n/a", rule, note=why, **kw)
+
+
+def _cap(level, mx):
+    return level if ORDER[level] <= ORDER[mx] else mx
+
+
+def _trunk_norm(age):
+    """軀幹解離角常模：9 歲 23±2°、15 歲以上 42±3°，其間線性內插（內插為本程式假設）"""
+    if age is None or age < 9:
+        return None
+    k = min(1.0, (age - 9) / 6.0)
+    return 23 + k * 19, 2 + k * 1
+
+
+def assess(meta, m, calibration_factor=None):
+    cf = CALIBRATION_FACTOR if calibration_factor is None else float(calibration_factor)
+    if not CAL_RANGE[0] <= cf <= CAL_RANGE[1]:
+        raise ValueError(f"calibration_factor 需介於 {CAL_RANGE[0]}–{CAL_RANGE[1]}")
+    items, ph, kin, q = [], m.get("phases", {}), m.get("kinematics", {}), m.get("quality", {})
+    age = meta.get("age")
+    group = None if age is None else ("adult" if age >= ADULT_MIN_AGE else "youth")
+
+    # ---- 1. 手肘受力與扭矩（【修改4】依年齡層選常模；單鏡頭校正）----
+    norms, cap_to, norm_note = KINETIC.get(group) if group else None, None, ""
+    if norms is None:
+        norms, set_name = KINETIC["youth"], "youth"
+        if group == "adult":
+            cap_to, norm_note = "watch", f"≥{ADULT_MIN_AGE} 歲但尚無成人常模，暫用青少年常模，最高只顯示「注意」，避免成人誤報；補上 KINETIC['adult'] 後解除"
+        else:
+            norm_note = "未填年齡，暫用青少年常模"
+    else:
+        set_name = group
+    for (phase, kind), c in norms.items():
+        key = f"{kind}_{phase}"
+        raw = (ph.get(phase) or {}).get(f"{kind}_{STAT}_{c['unit'].replace('·', '')}")
+        high = c["mean"] + 2 * c["sd"]
+        rule = f"常模 {c['mean']}±{c['sd']} {c['unit']}（{set_name}）；≥{c['alert']} 示警；≥{high:.2f}（+2SD）高風險"
+        src = SOURCES["kinetic_" + set_name]
+        rel = dict(rel="低：單鏡頭姿態估計＋二次微分，與動作捕捉常模直接比較誤差大", rel_level="low", source=src)
+        if raw is None:
+            items.append(_na(key, c["label"], c["unit"], "此期間影格不足（建議 ≥120 FPS）", rule, **rel))
+            continue
+        v = raw * cf
+        lv = "high" if v >= high else "alert" if v >= c["alert"] else "normal"
+        corr = []
+        if cf != 1:
+            corr.append(f"單鏡頭校正 ×{cf:g}（實測 {raw:.2f} → {v:.2f}）；係數未經驗證")
+        if cap_to and ORDER[lv] > ORDER[cap_to]:
+            lv = cap_to
+        if norm_note:
+            corr.append(norm_note)
+        if q.get("interpolated_samples") or q.get("despiked_samples"):
+            corr.append(f"手臂接近伸直的影格已內插 {q.get('interpolated_samples', 0)} 點、抑制突波 {q.get('despiked_samples', 0)} 點")
+        items.append(_item(key, c["label"], v, c["unit"], lv, rule, raw=raw, correction="；".join(corr),
+                           note="後拉期＝FC→MER；加速期＝MER→BR；MER 為估計值" if phase == "cocking" else "", **rel))
+
+    # ---- 2. GIRD（臨床量測，不是由影片算出）----
+    t_rom, o_rom = meta.get("ir_rom_throw_deg"), meta.get("ir_rom_other_deg")
+    tr_t, tr_o = meta.get("ir_trials_throw") or [], meta.get("ir_trials_other") or []
+    rule = "兩側內旋差 ≥20° 觸發 GIRD 高風險；8.3–20° 為本程式的「注意」區；<8.3° 為正常組平均"
+    if t_rom is None or o_rom is None:
+        items.append(_na("gird", "肩內旋活動度缺損 (GIRD)", "°", "未量測，不影響其他項目。建議由教練/防護員定期量測（影片無法推算此項）", rule))
+    else:
+        d = o_rom - t_rom
+        if len(tr_t) >= 2 and len(tr_o) >= 2:
+            s_t, s_o = statistics.stdev(tr_t), statistics.stdev(tr_o)
+            sd, se = max(s_t, s_o), (s_t ** 2 / len(tr_t) + s_o ** 2 / len(tr_o)) ** 0.5
+            reliable = sd <= 5
+            rel = f"{'中' if reliable else '低'}：重複量測 SD {sd:.1f}°（{len(tr_t)}／{len(tr_o)} 次）" + ("" if reliable else "，差異偏大")
+        else:
+            se, reliable, rel = None, False, "低：僅單次量測，常見誤差約 ±5°"
+        lv = "high" if d >= 20 else "watch" if d >= 8.3 else "normal"
+        notes, corr = ["差值＝非慣用側 − 慣用側"], ""
+        if lv == "high" and not reliable:
+            lv, corr = "alert", "量測可靠度低，最高只顯示「示警」；請以標準姿勢多次複測確認"
+        margin = max(5.0, 2 * se) if se is not None else 5.0
+        if abs(d - 20) <= margin:
+            notes.append(f"接近 20° 門檻（±{margin:.0f}° 內），建議複測")
+        items.append(_item("gird", "肩內旋活動度缺損 (GIRD)", d, "°", lv, rule, rel=rel, rel_level="medium" if reliable else "low",
+                           correction=corr, note="；".join(notes)))
+
+    # ---- 3. 軀幹旋轉 ----
+    rel_t = dict(rel="低：軀幹旋轉需深度（z）估計，單鏡頭誤差大", rel_level="low")
+    sep_mer, sep_max = kin.get("hip_shoulder_sep_at_mer_deg"), kin.get("max_hip_shoulder_sep_deg")
+    rule = "MER 時軀幹旋轉角 <11.5° 示警（GIRD 族群約 2.33°）"
+    if sep_mer is None:
+        items.append(_na("trunk_mer", "MER 軀幹旋轉角", "°", "無法計算", rule, **rel_t))
+    else:
+        items.append(_item("trunk_mer", "MER 軀幹旋轉角", abs(sep_mer), "°", "alert" if abs(sep_mer) < 11.5 else "normal", rule,
+                           note="以肩線與髖線的方位角差代表軀幹相對骨盆旋轉", **rel_t))
+    norm = _trunk_norm(age)
+    if sep_max is not None:
+        items.append(_item("trunk_max", "最大軀幹解離角（髖肩分離）", sep_max, "°", "info",
+                           "常模：9 歲約 23±2°、15 歲以上約 42±3°（9–15 歲為線性內插）；此項無示警門檻，僅供參考",
+                           note="請填年齡以顯示常模" if norm is None else f"同年齡參考值約 {norm[0]:.0f}±{norm[1]:.0f}°", **rel_t))
+
+    # ---- 4. 跨步長度（占身高百分比）----
+    pct = kin.get("stride_pct_height")
+    side = kin.get("stride_basis") == "image_plane_x"
+    rel = dict(rel="中：側面機位，影像平面距離（斜拍會低估）" if side else "低：非側面機位，需依賴深度估計；建議用側面機位",
+               rel_level="medium" if side else "low")
+    rule = "成人（≥15 歲）80–87% 身高；<80% 示警、<66% 高風險、>87% 注意。青少年（9–14 歲）66±7.1%：低於 −1SD 示警、−2SD 高風險、高於 +1SD 注意"
+    if pct is None:
+        items.append(_na("stride", "跨步長度", "% 身高", "缺少身高、踝關節資料或 FC 偵測失敗", rule, **rel))
+    elif age is None or age < 9:
+        items.append(_na("stride", "跨步長度", "% 身高", "請填年齡（需 ≥9 歲）才能套用常模", rule, **rel))
+    elif age >= 15:
+        lv = "high" if pct < 66 else "alert" if pct < 80 else "watch" if pct > 87 else "normal"
+        items.append(_item("stride", "跨步長度", pct, "% 身高", lv, rule, note="成人常模", source=SOURCES["stride_adult"], **rel))
+    else:
+        lo1, lo2, hi1 = 66 - 7.1, 66 - 14.2, 66 + 7.1
+        lv = "high" if pct < lo2 else "alert" if pct < lo1 else "watch" if pct > hi1 else "normal"
+        items.append(_item("stride", "跨步長度", pct, "% 身高", lv, rule, note="青少年常模", source=SOURCES["stride_youth"], **rel))
+
+    # ---- 5. 前腳著地（FC）姿態 ----
+    ab = kin.get("shoulder_abduction_at_fc_deg")
+    rule = "肩垂直外展角 76–88° 為正常區間，超出即示警"
+    if ab is None:
+        items.append(_na("abduction_fc", "FC 肩外展角", "°", "無法計算", rule))
+    else:
+        items.append(_item("abduction_fc", "FC 肩外展角", ab, "°", "normal" if 76 <= ab <= 88 else "alert", rule,
+                           rel="低：以上臂與軀幹軸夾角近似", rel_level="low", note="上臂與軀幹向下軸的夾角（手臂水平＝90°）"))
+    fl = kin.get("elbow_flexion_at_fc_deg")
+    if fl is not None:
+        items.append(_item("elbow_flexion_fc", "FC 肘屈曲角", fl, "°", "info", "理想約 90°（未提供示警門檻）", rel="中", rel_level="medium"))
+    items.append(_na("er_fc", "FC 肩外旋角", "°", "肩軸向旋轉無法由骨架點量測（理想約 45°）"))
+
+    # ---- 6. PEVT 迴歸式（僅供參考）----
+    reg = m.get("regression_pevt") or {}
+    rule = reg.get("formula", "") + "；" + reg.get("cycle", "")
+    if reg.get("predicted") is None:
+        items.append(_na("pevt_model", "預測峰值肘外翻力矩（迴歸式）", "", reg.get("note") or "輸入不足", rule))
+    else:
+        i = reg["inputs"]
+        off = reg.get("mer_offset_deg") or 0
+        items.append(_item(
+            "pevt_model", "預測峰值肘外翻力矩（迴歸式）", reg["predicted"], "N·m", "info", rule,
+            rel="低：MER 為前臂方向估計值；MER 每差 10°，預測值差約 16.7", rel_level="low",
+            correction=f"MER 先扣除基準 {off:g}° 再代入" if off else "",
+            note=(f"MER {i['mer_deg']}°（{'手動輸入' if i['mer_source'] == 'manual' else '前臂方向估計'}）、BR 屈曲 {i['elbow_flexion_at_br_deg']}°、"
+                  f"PEVT 屈曲 {i['elbow_flexion_at_pevt_deg']}°、EFtime {i['ef_time_pct']}%；逆向動力學實測峰值 {reg.get('measured_peak_valgus_torque_Nm')} N·m。"
+                  "此式的 MER 是肩盂肱關節外旋角，本系統只能用前臂方向近似；樣本為 21 位大學投手（PEVT 平均約 137±26 N·m），"
+                  "尺度與 Fleisig 常模（肘內翻力矩約 64 N·m）不同，請勿與上方常模或實測值直接比較")))
+
+    scored = [i for i in items if ORDER[i["level"]] >= 0]
+    overall = max((i["level"] for i in scored), key=lambda l: ORDER[l], default="n/a")
+    return {"overall": overall, "items": items, "flagged": [i["key"] for i in scored if ORDER[i["level"]] >= 1],
+            "calibration_factor": cf, "age_group": group, "kinetic_norm_set": set_name,
+            "references": ["逆向動力學：" + REFERENCES["inverse_dynamics"], "體段參數：" + REFERENCES["bsp"], "PEVT 迴歸式：" + REFERENCES["pevt_model"]],
+            "disclaimer": "常模多來自動作捕捉研究；本系統為單鏡頭姿態估計，數值僅供篩檢與同一投手的趨勢追蹤，不能取代臨床評估。"}
+
+</script>
+<script type="module">
+const $ = id => document.getElementById(id);
+const v = $('v'), cv = $('cv'), ctx = cv.getContext('2d');
+let D = null, sid = '', ev = null, loopOn = false, busy = false, wake = null;
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const keepAwake = async on => { try { if (on) wake = await navigator.wakeLock?.request('screen'); else { await wake?.release(); wake = null; } } catch {} };
+document.addEventListener('visibilitychange', () => { if (!document.hidden && busy) keepAwake(true); });
+const st = t => { $('st').textContent = t; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function fail(r) {
+  const t = (await r.text()).trim();
+  return new Error(r.status + ' ' + (t.startsWith('<') ? '收到的是網頁而不是 API 回應：此頁面不是從後端伺服器開啟的' : t.slice(0, 200)));
+}
+async function api(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (!r.ok) throw await fail(r);
+  return r.json();
+}
+async function get(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw await fail(r);
+  return r.json();
+}
+
+for (const f of ['cfps','model','pname','hand','ht','wt','ua','fa','age','ir_t','ir_o','role']) {
+  try { const s = localStorage.getItem('pp_' + f); if (s !== null) { $(f).value = s; if ($(f).selectedIndex < 0) $(f).selectedIndex = 0; } } catch {}
+  $(f).addEventListener('change', () => { try { localStorage.setItem('pp_' + f, $(f).value); } catch {} });
+}
+
+// ---------- 上傳（分段、可重試）與分析 ----------
+const CH = 8 * 1024 * 1024;
+async function upload(file, onp) {
+  for (let off = 0; off < file.size; off += CH) {
+    for (let k = 0; ; k++) {
+      try {
+        const r = await fetch(`/api/sessions/${sid}/video?offset=${off}`, {method: 'PUT', body: file.slice(off, off + CH)});
+        if (!r.ok) throw await fail(r);
+        break;
+      } catch (e) { if (k >= 4) throw e; await sleep(1500 * (k + 1)); }
+    }
+    onp(Math.min(1, (off + CH) / file.size));
+  }
+}
+async function poll() {
+  for (;;) {
+    const j = await get(`/api/sessions/${sid}/status`);
+    if (j.status === 'error') throw new Error(j.message);
+    if (j.status === 'done') return j;
+    $('pg').value = 50 + (j.total ? 50 * j.done / j.total : 0);
+    st(j.status === 'queued' ? '排隊中…' : `分析中 ${j.done || 0}/${j.total || '?'} 幀 ${j.message || ''}`);
+    await sleep(1500);
+  }
+}
+$('go').onclick = async () => {
+  const f = $('file').files[0];
+  if (!f) return st('請先選擇影片檔');
+  const cf = +$('cfps').value || null;
+  $('go').disabled = true; $('pg').hidden = false; $('pg').value = 0; busy = true; keepAwake(true);
+  try {
+    sid = (await api('/api/sessions', {...profile(), camera_role: $('role').value, fps: cf || 60})).session_id;
+    st('上傳中…'); await upload(f, p => { $('pg').value = p * 50; });
+    await api(`/api/sessions/${sid}/analyze`, {size: f.size, capture_fps: cf, model: $('model').value, start_s: num('t0'), end_s: num('t1')});
+    await poll(); $('pg').value = 100;
+    await openViewer(f);
+  } catch (e) { st('失敗：' + e.message); }
+  busy = false; keepAwake(false); $('go').disabled = false;
+};
+
+// ---------- 檢視器：可調速播放 + 關節標記 ----------
+const C = {sh: '#ffa500', el: '#ffe600', wr: '#ff3b3b', hd: '#ff8ad8', hp: '#4da3ff', kn: '#2fe0e0', an: '#4cff6a', he: '#ffffff'};
+const J = [[0,'頭','he'],[11,'L肩','sh'],[12,'R肩','sh'],[13,'L肘','el'],[14,'R肘','el'],[15,'L腕','wr'],[16,'R腕','wr'],
+  [17,'','hd'],[18,'','hd'],[19,'','hd'],[20,'','hd'],[23,'L髖','hp'],[24,'R髖','hp'],[25,'L膝','kn'],[26,'R膝','kn'],[27,'L踝','an'],[28,'R踝','an']];
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[15,17],[15,19],[16,18],[16,20],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+const off = () => +$('off').value || 0;
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const frameAt = t => clamp(Math.floor(t * D.video_fps + 0.25), 0, D.n_frames - 1);
+
+async function openViewer(file) {
+  st('載入分析結果…');
+  const [lm, job] = await Promise.all([get(`/api/sessions/${sid}/landmarks`), get(`/api/sessions/${sid}/status`)]);
+  D = lm; D.P = new Array(D.n_frames);
+  for (const f of D.frames) D.P[f.i] = f.p;
+  const ready = new Promise((ok, bad) => { v.onloadedmetadata = ok; v.onerror = () => bad(new Error('瀏覽器無法播放此影片格式')); });
+  v.src = URL.createObjectURL(file); await ready;
+  cv.width = v.videoWidth; cv.height = v.videoHeight;
+  $('seek').max = D.n_frames - 1; ev = null;
+  $('jfc').hidden = $('jmer').hidden = $('jbr').hidden = $('dk').hidden = true; $('alerts').replaceChildren();
+  for (const k in man) delete man[k]; showMarks();
+  $('viewer').hidden = false;
+  $('res').textContent = JSON.stringify({info: job.info, metrics: job.metrics}, null, 2); $('res').hidden = false;
+  if (!loopOn && v.requestVideoFrameCallback) {
+    loopOn = true;
+    const loop = (n, m) => { render(m.mediaTime); v.requestVideoFrameCallback(loop); };
+    v.requestVideoFrameCallback(loop);
+  } else if (!loopOn) {
+    loopOn = true;
+    const tick = () => { if (!v.paused) render(); requestAnimationFrame(tick); };
+    tick();
+  }
+  v.currentTime = 0.5 / D.video_fps;
+  try { applyDyn(await get(`/api/sessions/${sid}/dynamics_metrics`)); } catch {}
+  st(`影片 ${D.n_frames} 幀 · 拍攝 ${D.capture_fps} fps → ${(D.n_frames / D.capture_fps).toFixed(2)} 秒 · 偵測成功 ${D.frames.length} 幀（請核對秒數是否合理）`);
+}
+
+function label(txt, x, y, u, color) {
+  ctx.font = `${13 * u}px sans-serif`; ctx.lineWidth = 3 * u; ctx.strokeStyle = '#000'; ctx.fillStyle = color;
+  ctx.strokeText(txt, x, y); ctx.fillText(txt, x, y);
+}
+function drawPose(p, k) {
+  const W = cv.width, H = cv.height, u = Math.max(1, W / 900), R = D.handedness === 'R';
+  if (!p) { label('未偵測到人體', 12 * u, 28 * u, u, '#f55'); return; }
+  const vis = i => p[i][2] > 0.5, X = i => p[i][0] * W, Y = i => p[i][1] * H;
+  if ($('o_trail').checked) {
+    const w = R ? 16 : 15; ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 2 * u;
+    for (let j = Math.max(0, k - 40); j < k; j++) {
+      const a = D.P[j], b = D.P[j + 1]; if (!a || !b) continue;
+      ctx.globalAlpha = 0.15 + 0.7 * (j - (k - 40)) / 40;
+      ctx.beginPath(); ctx.moveTo(a[w][0] * W, a[w][1] * H); ctx.lineTo(b[w][0] * W, b[w][1] * H); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  if ($('o_skel').checked) for (const [a, b] of BONES) {
+    const arm = R ? (a === 12 || a === 14) && b !== 24 : (a === 11 || a === 13) && b !== 23;
+    ctx.globalAlpha = vis(a) && vis(b) ? 1 : 0.35; ctx.strokeStyle = arm ? '#00ff88' : '#6cf'; ctx.lineWidth = (arm ? 4 : 2) * u;
+    ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const [i, name, g] of J) {
+    ctx.globalAlpha = vis(i) ? 1 : 0.35;
+    if ($('o_pts').checked) { ctx.fillStyle = C[g]; ctx.strokeStyle = '#000'; ctx.lineWidth = u;
+      ctx.beginPath(); ctx.arc(X(i), Y(i), (g === 'hd' ? 3 : 6) * u, 0, 7); ctx.fill(); ctx.stroke(); }
+    if ($('o_lbl').checked && name) label(name, X(i) + 8 * u, Y(i) - 8 * u, u, C[g]);
+  }
+  ctx.globalAlpha = 1;
+}
+function render(t) {
+  if (!D || !v.videoWidth) return;
+  const f = frameAt(t ?? v.currentTime), k = clamp(f + off(), 0, D.n_frames - 1);
+  ctx.drawImage(v, 0, 0, cv.width, cv.height);
+  drawPose(D.P[k], k);
+  if (ev) {
+    const u = Math.max(1, cv.width / 900), r = Math.round, at = (t, c) => label(t, 12 * u, 28 * u, u, c);
+    if (r(ev.fc) === k) at('FC 前腳著地', '#ff0');
+    else if (r(ev.mer) === k) at('MER 最大外旋（估計）', '#ff0');
+    else if (r(ev.br) === k) at('BR 球離手', '#ff0');
+    else if (k > ev.fc && k < ev.mer) at('後拉期 FC → MER', '#0ff');
+    else if (k > ev.mer && k < ev.br) at('加速期 MER → BR', '#f0f');
+  }
+  $('seek').value = f;
+  $('info').textContent = `幀 ${f + 1}/${D.n_frames} · ${(k / D.capture_fps * 1000).toFixed(1)} ms`;
+}
+let sp = false;   // 逐幀步進播放中
+const seekFrame = f => { sp = false; v.pause(); v.currentTime = (clamp(f, 0, D.n_frames - 1) + 0.5) / D.video_fps; };
+v.addEventListener('seeked', () => render());
+v.addEventListener('play', () => { $('play').textContent = '❚❚ 暫停'; });
+v.addEventListener('pause', () => { $('play').textContent = '▶ 播放'; });
+v.addEventListener('ended', () => { $('play').textContent = '▶ 播放'; });
+const stepMode = () => IOS && +$('rate').value < 0.5;   // iOS Safari 低於 0.5× 的原生慢速不可靠
+async function stepPlay() {
+  sp = true; $('play').textContent = '❚❚ 暫停';
+  while (sp) {
+    const t0 = performance.now(), f = frameAt(v.currentTime);
+    if (f >= D.n_frames - 1) break;
+    const done = new Promise(r => v.addEventListener('seeked', r, {once: true}));
+    v.currentTime = (f + 1.5) / D.video_fps; await done;
+    await sleep(Math.max(0, 1000 / (D.video_fps * +$('rate').value) - (performance.now() - t0)));
+  }
+  sp = false; $('play').textContent = '▶ 播放';
+}
+$('play').onclick = () => {
+  if (sp) { sp = false; return; }
+  if (!v.paused) { v.pause(); return; }
+  if (stepMode()) stepPlay(); else { v.playbackRate = +$('rate').value; v.play(); }
+};
+$('rate').onchange = () => { if (!stepMode()) v.playbackRate = +$('rate').value; else if (!v.paused) v.pause(); };
+$('prev').onclick = () => seekFrame(frameAt(v.currentTime) - 1);
+$('next').onclick = () => seekFrame(frameAt(v.currentTime) + 1);
+$('seek').oninput = () => seekFrame(+$('seek').value);
+for (const id of ['o_skel', 'o_pts', 'o_lbl', 'o_trail', 'off']) $(id).onchange = () => render();
+document.addEventListener('keydown', e => { if (!D || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.key === 'ArrowLeft') $('prev').click(); else if (e.key === 'ArrowRight') $('next').click(); else if (e.key === ' ') { e.preventDefault(); $('play').click(); } });
+
+$('fs').onclick = async () => {
+  const s = $('stage');
+  if (s.classList.toggle('fs')) { try { await s.requestFullscreen?.(); } catch {} }
+  else if (document.fullscreenElement) document.exitFullscreen();
+  setTimeout(render, 100);
+};
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) $('stage').classList.remove('fs'); });
+
+// ---------- 力學計算、示警與下載 ----------
+const man = {};
+const curK = () => clamp(frameAt(v.currentTime) + off(), 0, D.n_frames - 1);
+const showMarks = () => { $('mtxt').textContent = ['fc', 'mer', 'br'].map(k => `${k.toUpperCase()}:${man[k] ?? '自動'}`).join('  '); };
+for (const [id, k] of [['mfc', 'fc'], ['mmer', 'mer'], ['mbr', 'br']]) $(id).onclick = () => { if (D) { man[k] = curK(); showMarks(); } };
+$('mclr').onclick = () => { for (const k in man) delete man[k]; showMarks(); };
+const ORD = {high: 3, alert: 2, watch: 1, normal: 0, info: -1, 'n/a': -2};
+function el(tag, text, cls) { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+function renderAlerts(a) {
+  const box = $('alerts'); box.replaceChildren();
+  if (!a) return;
+  const ban = el('div', `整體評估：${LV[a.overall][0]}`, 'ban'); ban.style.background = LV[a.overall][1]; box.append(ban);
+  for (const it of [...a.items].sort((x, y) => ORD[y.level] - ORD[x.level])) {
+    const d = el('div', null, 'it'), b = el('span', LV[it.level][0], 'bdg');
+    d.style.borderLeft = `5px solid ${LV[it.level][1]}`; b.style.background = LV[it.level][1];
+    d.append(b, el('b', ' ' + it.label + '　'), document.createTextNode(it.value == null ? '—' : `${it.value} ${it.unit}`),
+      el('small', it.rule), el('small', `依據：${it.source || '—'}`),
+      el('small', `單鏡頭可靠度（${{high: '高', medium: '中', low: '低'}[it.reliability_level] || '—'}）：${it.reliability || '—'}${it.note ? '　' + it.note : ''}`),
+      it.correction ? el('small', `修正：${it.correction}`) : '');
+    box.append(d);
+  }
+  box.append(el('small', a.disclaimer));
+  if (a.references) box.append(el('small', '方法依據：' + a.references.join('；')));
+}
+function applyDyn(m) {
+  const c = D.capture_fps / 1000;
+  ev = {fc: m.events.fc_ms * c, mer: m.events.mer_ms * c, br: m.events.br_ms * c};
+  $('res').textContent = JSON.stringify(m, null, 2); $('res').hidden = false;
+  $('jfc').hidden = $('jmer').hidden = $('jbr').hidden = $('dk').hidden = false;
+  renderAlerts(m.assessment); render();
+}
+$('dyn').onclick = async () => {
+  try {
+    st('計算力與力矩…');
+    const b = {};
+    for (const [k, key] of [['fc', 'fc_ms'], ['mer', 'mer_ms'], ['br', 'br_ms']]) if (man[k] != null) b[key] = man[k] / D.capture_fps * 1000;
+    b.mer_deg = num('mdeg'); b.calibration_factor = num('cal');
+    applyDyn(await api(`/api/sessions/${sid}/dynamics`, b));
+    st('完成（FC / MER / BR 已標示；不準請手動標記後重算）');
+  } catch (e) { st('計算失敗：' + e.message); }
+};
+$('jfc').onclick = () => seekFrame(Math.round(ev.fc) - off());
+$('jmer').onclick = () => seekFrame(Math.round(ev.mer) - off());
+$('jbr').onclick = () => seekFrame(Math.round(ev.br) - off());
+$('dl').onclick = async e => {
+  const k = e.target.dataset.k; if (!k) return;
+  const r = await fetch(`/api/sessions/${sid}/${k}`);
+  if (!r.ok) return st('下載失敗：' + r.status);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob());
+  a.download = `${$('pname').value || 'pitcher'}_${sid}_${k}.csv`; a.click();
+};
+
+// ---------- 投手資料與歷史紀錄 ----------
+const LV = {normal: ['正常', '#2ecc71'], watch: ['注意', '#f1c40f'], alert: ['示警', '#e67e22'], high: ['高風險', '#e74c3c'], info: ['參考', '#6cf'], 'n/a': ['無法計算', '#888']};
+const num = id => $(id).value === '' ? null : +$(id).value;
+const trials = id => ($(id).value.match(/-?\d+(\.\d+)?/g) || []).map(Number);
+const mean = a => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 10) / 10 : null;
+const profile = () => ({pitcher_name: $('pname').value.trim() || '未命名', handedness: $('hand').value === 'Right' ? 'R' : 'L',
+  height_cm: +$('ht').value, weight_kg: +$('wt').value, upper_arm_cm: +$('ua').value, forearm_cm: +$('fa').value,
+  age: num('age'), ir_rom_throw_deg: mean(trials('ir_t')), ir_rom_other_deg: mean(trials('ir_o')),
+  ir_trials_throw: trials('ir_t').length ? trials('ir_t') : null, ir_trials_other: trials('ir_o').length ? trials('ir_o') : null});
+let PF = {};
+async function loadPitchers() {
+  try {
+    const L = await get('/api/pitchers'); PF = Object.fromEntries(L.map(p => [p.name, p]));
+    $('plist').replaceChildren(...L.map(p => { const o = document.createElement('option'); o.value = p.name; return o; }));
+  } catch {}
+}
+$('pname').addEventListener('change', () => {
+  const p = PF[$('pname').value.trim()]; if (!p) return;
+  const set = (id, x) => { if (x != null) $(id).value = x; };
+  $('hand').value = p.handedness === 'L' ? 'Left' : 'Right';
+  set('ht', p.height_cm); set('wt', p.weight_kg); set('ua', p.upper_arm_cm); set('fa', p.forearm_cm);
+  set('age', p.age);
+  set('ir_t', (p.ir_trials_throw || [p.ir_rom_throw_deg]).filter(x => x != null).join(', ') || null);
+  set('ir_o', (p.ir_trials_other || [p.ir_rom_other_deg]).filter(x => x != null).join(', ') || null);
+  st('已帶入該投手的既有資料');
+});
+$('savep').onclick = async () => {
+  const {pitcher_name, ...rest} = profile();
+  if (pitcher_name === '未命名') return st('請先輸入姓名');
+  try { await api('/api/pitchers', {name: pitcher_name, ...rest}); await loadPitchers(); st('已儲存投手資料'); }
+  catch (e) { st('儲存失敗：' + e.message); }
+};
+$('hist').onclick = async () => {
+  const name = $('pname').value.trim(); if (!name) return st('請先輸入姓名');
+  try {
+    const L = await get('/api/pitchers/history?name=' + encodeURIComponent(name)), box = $('histbox');
+    box.replaceChildren();
+    if (!L.length) { box.textContent = '尚無紀錄'; return; }
+    const tb = el('table', null, 'tb'), hr = el('tr'), f = x => x ?? '—';
+    for (const t of ['日期', '機位', 'FPS', '後拉內翻 N·m', '加速內翻 N·m', '後拉內側力 N', '加速內側力 N', '狀態']) hr.append(el('th', t));
+    tb.append(hr);
+    for (const r of L) {
+      const tr = el('tr', null, 'rowc'), td = el('td');
+      tr.append(el('td', r.created_at ? new Date(r.created_at).toLocaleString() : '—'), el('td', (r.camera_role || '').replace('Camera ', '')),
+        el('td', f(r.fps)), el('td', f(r.varus_cocking)), el('td', f(r.varus_accel)), el('td', f(r.medial_cocking)), el('td', f(r.medial_accel)));
+      if (r.overall) { const b = el('span', LV[r.overall][0], 'bdg'); b.style.background = LV[r.overall][1]; td.append(b); } else td.textContent = '未計算';
+      tr.append(td);
+      tr.onclick = async () => {
+        const f = $('file').files[0];
+        if (!f) return st('請先在上方選擇「當初分析的那支影片」，再點這一列載入');
+        sid = r.session_id;
+        try { await openViewer(f); } catch (e) { st('載入失敗：' + e.message); }
+      };
+      tb.append(tr);
+    }
+    box.append(tb);
+  } catch (e) { st('讀取歷史失敗：' + e.message); }
+};
+loadPitchers();
+fetch('/healthz').then(r => r.json()).then(j => { if (!j.ok) throw 0; }).catch(() =>
+  st(`⚠ 找不到後端：此頁面不是從後端伺服器開啟的（目前網址：${location.host}）。請先啟動後端，再用 http://localhost:8000 或部署後的網址開啟。`));
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+</script>
+</body>
+</html>
